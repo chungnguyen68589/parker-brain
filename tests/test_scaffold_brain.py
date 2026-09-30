@@ -113,6 +113,9 @@ class Scaffold(unittest.TestCase):
                      "AGENTS.md", ".codex/config.toml", "scripts/voice-lint.py"):
             self.assertIn(path, tree)
         self.assertEqual(tree["scripts/voice-lint.py"]["mode"], "100755")
+        # Parker Desktop writes parker-context/ from the database; git must never pick it up.
+        self.assertEqual(tree[".gitignore"]["mode"], "100644")
+        self.assertIn("parker-context/", tree[".gitignore"]["content"].splitlines())
         self.assertEqual(tree["CLAUDE.md"]["mode"], "100644")
         self.assertNotIn("BUILD-STATUS.md", tree)
         self.assertNotIn("running-notes/refresh-schedule.md", tree)
@@ -228,6 +231,26 @@ class Scaffold(unittest.TestCase):
         self.assertEqual(config["run_id"], "run-1")
         self.assertEqual(config["usage_logging"], {"enabled": True})
         self.assertEqual(config["parker_brain_version"], "v99")
+
+    def test_init_adds_parker_context_to_an_existing_gitignore(self):
+        brand = self.brand("ignore brand")
+        (brand / ".gitignore").write_text("node_modules/\n.env")  # no final newline
+        result = self.init(brand)
+        self.assert_init_ok(result)
+        self.assertIn(".gitignore: added parker-context/", result.stdout)
+        lines = (brand / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:2], ["node_modules/", ".env"])
+        self.assertEqual(lines.count("parker-context/"), 1)
+        again = self.init(brand)
+        self.assert_init_ok(again)
+        self.assertIn(".gitignore: kept", again.stdout)
+        self.assertEqual((brand / ".gitignore").read_text(encoding="utf-8").splitlines(), lines)
+
+    def test_init_keeps_a_gitignore_that_already_ignores_the_folder(self):
+        brand = self.brand("ignored brand")
+        (brand / ".gitignore").write_text("/parker-context\n")
+        self.assert_init_ok(self.init(brand))
+        self.assertEqual((brand / ".gitignore").read_text(encoding="utf-8"), "/parker-context\n")
 
     def test_init_refuses_a_built_brain_and_a_missing_mount(self):
         built = self.brand("built brand")
@@ -540,7 +563,7 @@ class Scaffold(unittest.TestCase):
         writes = [(m, p) for m, p, _ in calls if m != "GET"]
         self.assertEqual(writes, [("POST", "/repos/o/r/git/trees"), ("POST", "/repos/o/r/git/commits"),
                                   ("PATCH", "/repos/o/r/git/refs/heads/main")])
-        self.assertEqual(calls[4][2]["base_tree"], "tree0")  # keeps a LICENSE or .gitignore
+        self.assertEqual(calls[4][2]["base_tree"], "tree0")  # keeps a LICENSE
         tree = {item["path"]: item for item in calls[4][2]["tree"]}
         self.assertEqual(json.loads(tree["parker_config.json"]["content"])["brand_name"], IDENTITY["brand_name"])
         self.assertNotIn("{{BRAND_NAME}}", tree["CLAUDE.md"]["content"])

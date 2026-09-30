@@ -4,7 +4,8 @@
 Three commands:
 
   init      Run inside a brand folder whose parker-system/ mount is attached.
-            Writes every scaffold file that is missing and never overwrites one.
+            Writes every scaffold file that is missing and never overwrites one
+            (an existing parker_config.json and .gitignore only gain what they lack).
               python3 parker-system/scripts/scaffold-brain.py init \\
                   --brand-name "Acme" --brand-id 123
             With --restore-copies it instead puts back the pinned release's
@@ -143,6 +144,7 @@ SEEDS = (
         (r"\{\{BUILD_STATUS\b[^{}]*\}\}", CLAUDE_BUILD_STATUS),
     )),
     Seed("README.md", "templates/brand-scaffold/README.md"),
+    Seed(".gitignore", "templates/brand-scaffold/gitignore"),
     Seed("open-loops/README.md", "templates/brand-scaffold/open-loops/README.md"),
     Seed("hypotheses/README.md", "templates/brand-scaffold/hypotheses/README.md"),
     Seed("validations/README.md", "templates/brand-scaffold/validations/README.md"),
@@ -437,6 +439,33 @@ def replace_atomically(path: Path, data: bytes, executable: bool = False, sync_d
         raise
 
 
+def merge_gitignore(path: Path, rendered: str, dry_run: bool) -> tuple[str, bool]:
+    """Add the seed's ignore rules an existing .gitignore lacks, under the seed's
+    comment; keep every line it has. A folder the brain already had keeps its
+    .gitignore, but it still needs parker-context/ ignored: this run stamps the
+    ledger through the mount's release, so the migration that adds the rule
+    never runs there. Returns (what happened, whether it needs attention)."""
+    try:
+        current = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        return (f"isn't readable ({error}); add the parker-context/ line to it by hand"), True
+    have = {line.strip().strip("/") for line in current.splitlines()}
+    comment = [line for line in rendered.splitlines() if line.startswith("#")]
+    missing = [line for line in rendered.splitlines()
+               if line.strip() and not line.startswith("#") and line.strip().strip("/") not in have]
+    if not missing:
+        return "kept", False
+    if dry_run:
+        return "would add " + ", ".join(missing), False
+    head = current if not current or current.endswith("\n") else current + "\n"
+    block = "\n".join(comment + missing) + "\n"
+    try:
+        replace_atomically(path, (head + ("\n" if head else "") + block).encode("utf-8"))
+    except OSError as error:
+        raise ScaffoldError(f"couldn't update .gitignore: {error}")
+    return "added " + ", ".join(missing), False
+
+
 def merge_config(path: Path, rendered: str) -> tuple[str, bool]:
     """Add the scaffold's keys an existing parker_config.json lacks; change nothing else.
     Returns (what happened, whether it needs attention)."""
@@ -565,6 +594,9 @@ def cmd_init(args) -> int:
             if entry.path == "parker_config.json" and not args.dry_run:
                 outcome, broken = merge_config(path, text)
                 (problems if broken else notes).append(f"parker_config.json: {outcome}")
+            elif entry.path == ".gitignore" and path.is_file() and not path.is_symlink():
+                outcome, broken = merge_gitignore(path, text, args.dry_run)
+                (problems if broken else notes).append(f".gitignore: {outcome}")
             else:
                 kept.append(entry.path)
             continue
@@ -732,8 +764,8 @@ def apply_manifest(manifest: dict, repo: str, values: dict[str, str], api) -> st
         if "content" in item:
             item["content"] = render(item["content"], values, item["path"])
         entries.append(item)
-    # base_tree keeps a LICENSE or .gitignore the repo was created with; the
-    # manifest's README.md replaces GitHub's starter one.
+    # base_tree keeps a LICENSE the repo was created with; the manifest's own
+    # README.md and .gitignore replace GitHub's starter ones.
     status, new_tree = api("POST", f"/repos/{repo}/git/trees",
                            {"base_tree": commit["tree"]["sha"], "tree": entries})
     if status != 201:
