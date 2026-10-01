@@ -123,6 +123,25 @@ class Main(unittest.TestCase):
                              ("0", "", ""))
             self.assertIn("PATH", env)
 
+    def test_says_to_wait_before_the_clone_starts(self):
+        # The shell shows this line when it moves a long clone to the
+        # background, so it has to be out before git starts.
+        err, seen = io.StringIO(), []
+
+        def fake(cmd, **kwargs):
+            if cmd[:2] == ["git", "clone"]:
+                seen.append(err.getvalue())
+            return subprocess.CompletedProcess(cmd, 0)
+        with mock.patch.object(crg.subprocess, "run", side_effect=fake), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(crg.main(["clone", URL, BRAND, "/work/brain"]), 0)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("cloud-run-git.py: cloning. A big Parker Brain takes several minutes",
+                      seen[0])
+        self.assertIn('"No commits yet" there: that is the clone still running', seen[0])
+        # The folder means done, so it shows up nowhere before the clone.
+        self.assertNotIn(FOLDER, seen[0])
+
     def test_a_failed_mount_warns_but_keeps_the_copy(self):
         def fake(cmd, **kwargs):
             return subprocess.CompletedProcess(cmd, 1 if "submodule" in cmd else 0)
@@ -198,6 +217,8 @@ class FactoryRule(unittest.TestCase):
                 text = (FACTORY / path).read_text()
                 self.assertIn("1. Run `scripts/cloud-run-git.py key [brand_id]`.", text)
                 self.assertIn("3. Run `scripts/cloud-run-git.py clone <git_url> [brand_id]`", text)
+                self.assertIn("give the command a long timeout (10 minutes) and wait until it "
+                              "prints the folder", text)
                 self.assertNotIn("credential approve", text)
                 self.assertNotIn("openssl rand", text)
 
